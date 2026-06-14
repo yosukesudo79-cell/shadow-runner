@@ -1,0 +1,414 @@
+<!doctype html>
+<html lang="ja">
+<head>
+<meta charset="utf-8">
+<title>Shadow Runner EX</title>
+<style>
+body{margin:0;background:#080a10;color:white;font-family:system-ui;text-align:center}
+canvas{display:block;margin:16px auto;border:3px solid white;background:#111}
+.info{font-size:14px;color:#ddd;line-height:1.7}
+</style>
+</head>
+<body>
+<h2>Shadow Runner EX</h2>
+<canvas id="game" width="960" height="540" tabindex="0"></canvas>
+<div class="info">
+画面クリック → Enterで開始 / ←→移動 / ↓しゃがむ / Spaceジャンプ / Z斬り / X手裏剣 / C時止め / Vバリア / G=無限宇宙崩壊斬 / Rリスタート<br>
+紫P：連射　青S：3方向　黄T：時止め回復　白B：バリア　赤R：狂戦士　緑：回復<br>高火力技：↓ → Z　広範囲技：↓ → X<br>禁断奥義：↑ ↑ ↓ ↓ ← → ← → Z X G　※ULT100%・気力ほぼ満タン・超難コマンド<br>敵HP超強化。ボスは禁断奥義でも即死しません。<br>
+スコア＝撃破数とクリアタイムで決まります。速く、多く倒すほど高得点。
+</div>
+<script>
+const canvas=document.getElementById("game"),ctx=canvas.getContext("2d");canvas.focus();
+const W=960,H=540,levelW=4300,gravity=.7;
+const keys={};
+let state,frame,camX,score,startFrame,clearFrame,kills,player,enemies,bullets,items,particles;
+
+const floors=[
+{x:0,y:470,w:520,h:70},{x:610,y:420,w:220,h:28},{x:900,y:360,w:200,h:28},
+{x:1180,y:470,w:520,h:70},{x:1450,y:390,w:180,h:28},{x:1710,y:420,w:240,h:28},
+{x:2050,y:350,w:210,h:28},{x:2320,y:470,w:520,h:70},{x:2600,y:390,w:180,h:28},
+{x:2920,y:330,w:220,h:28},{x:3220,y:470,w:430,h:70},{x:3720,y:420,w:210,h:28},
+{x:3700,y:470,w:580,h:70}
+];
+const spikes=[{x:530,y:452,w:65,h:18},{x:1120,y:452,w:60,h:18},{x:1970,y:452,w:70,h:18},{x:3660,y:452,w:55,h:18}];
+const goal={x:4180,y:390,w:70,h:80};
+
+function resetGame(toTitle=true){
+ state=toTitle?"title":"play"; frame=0; camX=0; score=0; startFrame=0; clearFrame=0; kills=0;
+ player={x:70,y:390,w:38,h:62,vx:0,vy:0,dir:1,onGround:false,hp:220,maxHp:220,stamina:170,maxStamina:170,inv:0,slash:0,atkCd:0,throwCd:0,combo:0,rapid:false,spread:false,timeCharge:0,barrier:0,berserk:0,ultimate:0,ultimateFlash:0,crouch:false,command:[],commandTimer:0,pierceFlash:0,wideFlash:0};
+ enemies=[
+  enemy("終焉の魔剣士",360,420,1,220,500,500,1.5,22,"melee"), enemy("冥界竜騎兵",690,370,-1,610,830,700,1.2,28,"spear"),
+  enemy("天罰の狙撃手",970,310,-1,900,1100,600,.9,26,"arrow"), enemy("虚無の暗殺者",1300,420,1,1180,1600,900,2.5,32,"shuriken"),
+  enemy("絶対防壁の守護神",1520,340,-1,1450,1630,1500,.9,42,"rock"), enemy("終焉の魔剣士",1820,370,1,1710,1950,600,1.7,28,"melee"),
+  enemy("獄炎魔導王",2160,300,-1,2050,2260,800,.75,36,"fire"), enemy("虚無の暗殺者",2420,420,1,2320,2700,900,2.6,36,"shuriken"),
+  enemy("天罰の狙撃王",2670,340,-1,2600,2780,850,1.0,34,"arrow"), enemy("絶対防壁の守護神",3050,280,1,2920,3140,1800,.95,46,"rock"),
+  enemy("冥界竜騎兵",3340,420,-1,3220,3600,900,1.4,38,"spear"), enemy("獄炎魔導王",3820,370,-1,3720,3930,1000,.8,42,"fire"),
+  enemy("超終末の破壊皇帝・最終形態",3840,300,-1,3720,4010,5200,1.75,95,"boss")
+ ];
+ bullets=[]; particles=[];
+ items=[
+  {type:"heal",x:650,y:370,w:24,h:24,taken:false},{type:"rapid",x:1240,y:420,w:28,h:28,taken:false},
+  {type:"time",x:1480,y:340,w:28,h:28,taken:false},{type:"heal",x:1740,y:370,w:24,h:24,taken:false},
+  {type:"spread",x:2075,y:300,w:28,h:28,taken:false},{type:"barrier",x:2625,y:340,w:28,h:28,taken:false},
+  {type:"berserk",x:2940,y:280,w:28,h:28,taken:false},{type:"heal",x:3260,y:420,w:24,h:24,taken:false},
+  {type:"time",x:3745,y:370,w:28,h:28,taken:false}
+ ];
+}
+function enemy(name,x,y,dir,min,max,hp,speed,damage,weapon){
+ return {name,x,y,w:name.includes("鬼武者")||name.includes("破壊皇帝")||e.name.includes("破壊皇帝")?132:42,h:name.includes("鬼武者")||name.includes("破壊皇帝")||e.name.includes("破壊皇帝")?150:62,vx:0,vy:0,dir,min,max,hp,maxHp:hp,speed,damage,weapon,cd:50,hit:0,dead:false,onGround:false,rage:false,frozen:0,shield:0,phase:1};
+}
+function start(){state="play";startFrame=frame}
+function rect(a,b){return a.x<b.x+b.w&&a.x+a.w>b.x&&a.y<b.y+b.h&&a.y+a.h>b.y}
+function land(o,p){if(o.x+o.w>p.x&&o.x<p.x+p.w&&o.y+o.h<=p.y+18&&o.y+o.h+o.vy>=p.y){o.y=p.y-o.h;o.vy=0;o.onGround=true}}
+function groundBelow(o,nextX){let fy=o.y+o.h+8,fx=nextX+(o.dir>0?o.w+8:-8);return floors.some(p=>fx>=p.x&&fx<=p.x+p.w&&fy<=p.y+24&&fy>=p.y-85)}
+function burst(x,y,color,n){for(let i=0;i<n;i++)particles.push({x,y,vx:(Math.random()*2-1)*5,vy:(Math.random()*2-1)*5-2,life:28,color})}
+function hurtPlayer(dmg,knock){
+ if(player.inv>0||state!=="play")return;
+ if(player.barrier>0){player.barrier-=dmg;burst(player.x+20,player.y+25,"#e9ecef",12);return}
+ player.hp-=dmg;player.inv=32;player.vx=knock;player.vy=-6;burst(player.x+20,player.y+30,"#ff595e",18);
+ if(player.hp<=0){player.hp=0;state="gameover"}
+}
+function damageEnemy(e,dmg,knock){
+ if(e.dead)return;
+ let bonus=player.berserk>0?1.45:1;
+ if(e.name.includes("鬼武者")||name.includes("破壊皇帝")||e.name.includes("破壊皇帝")){
+   if(e.shield>0){
+     burst(e.x+e.w/2,e.y+60,"#90e0ef",18);
+     return;
+   }
+   dmg = Math.floor(dmg * (e.rage ? 0.42 : 0.55));
+ }
+ e.hp-=Math.floor(dmg*bonus);
+if(e.name.includes("鬼武者")||name.includes("破壊皇帝")||e.name.includes("破壊皇帝")){
+  e.x += knock * 0.12;
+} else {
+  e.x += knock;
+}
+e.x = Math.max(e.min, Math.min(e.max - e.w, e.x));
+e.hit=10;burst(e.x+e.w/2,e.y+30,"#ffd166",14);
+ if(e.hp<e.maxHp*.65)e.rage=true;
+ if(e.hp<=0){e.dead=true;kills++;player.ultimate=Math.min(100,player.ultimate+10);burst(e.x+e.w/2,e.y+e.h/2,"#f72585",45)}
+}
+document.addEventListener("keydown",e=>{
+ keys[e.key]=true;let k=e.key.toLowerCase();if([" ","arrowleft","arrowright","arrowdown"].includes(k))e.preventDefault();
+ let cmdKey=null;
+ if(e.key==="ArrowUp")cmdKey="U";
+ if(e.key==="ArrowDown")cmdKey="D";
+ if(e.key==="ArrowRight")cmdKey="R";
+ if(e.key==="ArrowLeft")cmdKey="L";
+ if(k==="z")cmdKey="Z";
+ if(k==="x")cmdKey="X";
+ if(cmdKey&&state==="play"){
+   player.command.push(cmdKey);
+   if(player.command.length>14)player.command.shift();
+   player.commandTimer=150;
+ }
+ if(k==="enter"&&state==="title")start(); if(k==="r")resetGame(true);
+ if(state==="play"){
+  if(e.key===" "&&player.onGround){player.vy=-14.5;player.onGround=false;burst(player.x+20,player.y+player.h,"#8ecae6",8)}
+  if(k==="z"&&tryPierceStrike()){
+    // 高火力技発動
+  }else if(k==="z"&&player.atkCd<=0&&player.stamina>=16){player.combo=player.combo%3+1;player.slash=14;player.atkCd=player.combo===3?20:12;player.stamina-=16}
+  if(k==="x"&&tryWideBurst()){
+    // 広範囲技発動
+  }else if(k==="x"&&player.throwCd<=0&&player.stamina>=10){firePlayerShuriken();player.throwCd=player.rapid?5:20;player.stamina-=player.rapid?7:14}
+  if(k==="c"&&player.timeCharge>=100){enemies.forEach(en=>{if(!en.dead)en.frozen=210});player.timeCharge=0;burst(player.x+20,player.y+20,"#ffd166",40)}
+  if(k==="v"&&player.barrier<=0&&player.stamina>=60){player.barrier=90;player.stamina-=60;burst(player.x+20,player.y+20,"#e9ecef",30)}
+  if(k==="g"&&tryForbiddenAnnihilation()){
+    // 禁断奥義発動
+  }else if(k==="g"&&player.ultimate>=100){
+    player.ultimate=0;
+    player.ultimateFlash=260;
+    bullets=[];
+    enemies.forEach(e=>{
+      if(!e.dead){
+        e.shield=0;
+        if(e.name.includes("鬼武者")||name.includes("破壊皇帝")||e.name.includes("破壊皇帝")){
+          e.hp -= Math.floor(e.maxHp*0.30);
+          e.frozen=150;e.cd=45;
+          burst(e.x+e.w/2,e.y+e.h/2,"#ffd700",90);
+        }else{
+          e.hp=0;
+          e.dead=true;
+          kills++;
+          burst(e.x+e.w/2,e.y+e.h/2,"#ffffff",45);
+        }
+      }
+    });
+    for(let i=0;i<160;i++){
+      particles.push({
+        x:player.x+20,
+        y:player.y+20,
+        vx:(Math.random()*2-1)*11,
+        vy:(Math.random()*2-1)*11,
+        life:80,
+        color:i%3===0?"#ffd700":i%3===1?"#ffffff":"#9d4edd"
+      });
+    }
+  }
+
+ }
+});
+document.addEventListener("keyup",e=>keys[e.key]=false);canvas.addEventListener("click",()=>canvas.focus());
+
+function firePlayerShuriken(){let base={owner:"player",x:player.x+20,y:player.y+24,w:24,h:8,vx:player.dir*10.5,damage:45,life:110,pierce:player.rapid?3:1};bullets.push({...base,vy:0});if(player.spread){bullets.push({...base,vy:-2.4,damage:36});bullets.push({...base,vy:2.4,damage:36})}}
+function lastCommand(seq){
+ let s=player.command.join("");
+ return s.endsWith(seq);
+}
+function tryPierceStrike(){
+ if(!lastCommand("DZ"))return false;
+ if(player.stamina<55||player.ultimate<20)return false;
+ player.stamina-=55;
+ player.ultimate-=20;
+ player.pierceFlash=36;
+ player.command=[];
+ let box={x:player.dir>0?player.x+10:player.x-260,y:player.y-20,w:300,h:105};
+ enemies.forEach(e=>{
+   if(!e.dead&&rect(box,e)){
+     damageEnemy(e,e.name.includes("鬼武者")||name.includes("破壊皇帝")||e.name.includes("破壊皇帝")?520:999,player.dir*28);
+     e.frozen=Math.max(e.frozen||0,45);
+   }
+ });
+ bullets=bullets.filter(b=>b.owner==="player");
+ burst(player.x+20,player.y+20,"#ff006e",60);
+ return true;
+}
+
+function tryForbiddenAnnihilation(){
+ // 超難コマンド：↑↑↓↓←→←→ZXG
+ if(!lastCommand("UUDDLRLRZXG"))return false;
+ if(player.ultimate<100||player.stamina<player.maxStamina*0.85)return false;
+
+ player.ultimate=0;
+ player.stamina=0;
+ player.ultimateFlash=340;
+ player.pierceFlash=70;
+ player.wideFlash=70;
+ player.command=[];
+
+ bullets=[];
+ enemies.forEach(e=>{
+   if(!e.dead){
+     e.shield=0;
+     if(e.name.includes("破壊皇帝")||e.name.includes("鬼武者")){
+       e.hp -= Math.floor(e.maxHp*0.30);
+       e.frozen=180;
+       burst(e.x+e.w/2,e.y+e.h/2,"#ff006e",120);
+       burst(e.x+e.w/2,e.y+e.h/2,"#ffd700",120);
+     }else{
+       e.hp=0;
+       e.dead=true;
+       kills++;
+       burst(e.x+e.w/2,e.y+e.h/2,"#ffffff",80);
+       burst(e.x+e.w/2,e.y+e.h/2,"#ffd700",80);
+     }
+   }
+ });
+
+ for(let i=0;i<260;i++){
+   particles.push({
+     x:player.x+20,
+     y:player.y+20,
+     vx:(Math.random()*2-1)*14,
+     vy:(Math.random()*2-1)*14,
+     life:100,
+     color:i%4===0?"#ffffff":i%4===1?"#ffd700":i%4===2?"#ff006e":"#00ffff"
+   });
+ }
+ return true;
+}
+
+function tryWideBurst(){
+ if(!lastCommand("DX"))return false;
+ if(player.stamina<75||player.ultimate<30)return false;
+ player.stamina-=75;
+ player.ultimate-=30;
+ player.wideFlash=50;
+ player.command=[];
+ let box={x:player.x-220,y:player.y-170,w:480,h:330};
+ enemies.forEach(e=>{
+   if(!e.dead&&rect(box,e)){
+     damageEnemy(e,e.name.includes("鬼武者")||name.includes("破壊皇帝")||e.name.includes("破壊皇帝")?360:650, e.x<player.x?-20:20);
+     e.frozen=Math.max(e.frozen||0,30);
+   }
+ });
+ bullets=[];
+ burst(player.x+20,player.y+20,"#00ffff",85);
+ return true;
+}
+
+function enemyShoot(e){let s=e.rage?7.8:6.3;
+ if(e.weapon==="arrow")bullets.push({owner:"enemy",kind:"arrow",x:e.x+20,y:e.y+25,w:24,h:7,vx:e.dir*s,vy:0,damage:e.damage,life:150});
+ if(e.weapon==="shuriken")bullets.push({owner:"enemy",kind:"shuriken",x:e.x+20,y:e.y+25,w:18,h:8,vx:e.dir*(s+1),vy:0,damage:e.damage,life:130});
+ if(e.weapon==="rock")bullets.push({owner:"enemy",kind:"rock",x:e.x+20,y:e.y+22,w:20,h:20,vx:e.dir*4.8,vy:-4,damage:e.damage,life:130});
+ if(e.weapon==="fire")bullets.push({owner:"enemy",kind:"fire",x:e.x+20,y:e.y+20,w:26,h:14,vx:e.dir*5.8,vy:Math.sin(frame/12)*1.5,damage:e.damage,life:150});
+ if(e.weapon==="boss"){
+  bullets.push({owner:"enemy",kind:"dark",x:e.x+55,y:e.y+62,w:52,h:18,vx:e.dir*(e.rage?8.0:6.5),vy:0,damage:e.rage?58:44,life:210});
+  bullets.push({owner:"enemy",kind:"fire",x:e.x+55,y:e.y+35,w:38,h:15,vx:e.dir*6.2,vy:-2.0,damage:38,life:190});
+  bullets.push({owner:"enemy",kind:"fire",x:e.x+55,y:e.y+88,w:38,h:15,vx:e.dir*6.2,vy:2.0,damage:38,life:190});
+  bullets.push({owner:"enemy",kind:"rock",x:e.x+55,y:e.y+5,w:30,h:30,vx:e.dir*4.4,vy:-6,damage:48,life:210});
+  if(e.rage){
+    bullets.push({owner:"enemy",kind:"dark",x:e.x+55,y:e.y+62,w:36,h:12,vx:e.dir*7.5,vy:-3.2,damage:40,life:190});
+    bullets.push({owner:"enemy",kind:"dark",x:e.x+55,y:e.y+62,w:36,h:12,vx:e.dir*7.5,vy:3.2,damage:40,life:190});
+    bullets.push({owner:"enemy",kind:"fire",x:e.x+55,y:e.y+62,w:32,h:12,vx:e.dir*7.0,vy:-1.0,damage:36,life:190});
+    bullets.push({owner:"enemy",kind:"fire",x:e.x+55,y:e.y+62,w:32,h:12,vx:e.dir*7.0,vy:1.0,damage:36,life:190});
+  }
+}
+}
+function update(){
+ frame++; if(state!=="play"){updateParticles();return}
+ player.vx*=player.onGround?.78:.94;if(keys["ArrowLeft"]){player.vx-=.95;player.dir=-1}if(keys["ArrowRight"]){player.vx+=.95;player.dir=1}
+ player.crouch=keys["ArrowDown"]||keys["s"]||false;
+if(player.crouch){player.vx*=0.75;}
+player.vx=Math.max(-5.6,Math.min(5.6,player.vx));player.vy+=gravity;player.x+=player.vx;player.y+=player.vy;player.onGround=false;floors.forEach(p=>land(player,p));player.x=Math.max(0,Math.min(levelW-player.w,player.x));if(player.y>H+120)hurtPlayer(999,0);
+ if(player.slash>0){let wide=player.combo===3?84:66,s={x:player.dir>0?player.x+26:player.x-wide+8,y:player.y+8,w:wide,h:50};if(player.slash>7)enemies.forEach(e=>{if(!e.dead&&rect(s,e))damageEnemy(e,player.combo===3?62:42,player.dir*(player.combo===3?24:17))})}
+ enemies.forEach(e=>{if(e.dead)return;if(e.frozen>0){e.frozen--;if(e.frozen===0){e.cd=20;}return}
+  let dist=(player.x+20)-(e.x+e.w/2);e.dir=dist>0?1:-1;e.cd--;
+  if(e.name.includes("鬼武者")||name.includes("破壊皇帝")||e.name.includes("破壊皇帝")){
+    if(e.hp < e.maxHp * 0.65) e.phase = 2;
+    if(frame % 360 === 0) e.shield = 120;
+    if(e.shield>0) e.shield--;
+  }
+  let rage=e.rage?1.55:1,range=e.weapon==="melee"||e.weapon==="spear"?310:520;
+  if(Math.abs(dist)<range&&["arrow","shuriken","rock","fire","boss"].includes(e.weapon)&&e.cd<=0){enemyShoot(e);e.cd=e.weapon==="boss"?(e.phase>=4?24:e.phase>=3?30:e.rage?35:50):(e.rage?38:58)}
+  let desired=Math.abs(dist)<range?e.dir*e.speed*rage:e.speed*(e.x<e.min?1:e.x+e.w>e.max?-1:e.dir),nx=e.x+desired;
+  if(e.onGround&&!groundBelow(e,nx)){desired=0;e.dir*=-1;e.vx=0}else e.vx=desired;
+  e.vy+=gravity;e.x+=e.vx;e.y+=e.vy;e.onGround=false;floors.forEach(p=>land(e,p));if(e.x<e.min){e.x=e.min;e.dir=1}
+if(e.x+e.w>e.max){e.x=e.max-e.w;e.dir=-1}
+if(e.name.includes("鬼武者")||name.includes("破壊皇帝")||e.name.includes("破壊皇帝")){
+  e.x = Math.max(e.min, Math.min(e.max - e.w, e.x));
+}
+if(e.y>H+200){e.x=(e.min+e.max)/2;e.y=250;e.vy=0}
+  if(e.hit>0)e.hit--; if(rect(player,e)&&e.cd<=0){hurtPlayer(e.name.includes("鬼武者")||name.includes("破壊皇帝")||e.name.includes("破壊皇帝")?(e.rage?90:70):e.damage,e.dir*9);e.cd=e.name.includes("鬼武者")||name.includes("破壊皇帝")||e.name.includes("破壊皇帝")?24:(e.rage?34:48)}
+ });
+ bullets.forEach(b=>{b.x+=b.vx;b.y+=b.vy||0;if(b.kind==="rock")b.vy+=.18;b.life--;if(b.owner==="player")enemies.forEach(e=>{if(!e.dead&&rect(b,e)){damageEnemy(e,b.damage,Math.sign(b.vx)*16);if(b.pierce>0)b.pierce--;else b.life=0}});else{
+      let hitPlayer=player.crouch
+        ? {x:player.x,y:player.y+38,w:player.w,h:player.h-38}
+        : player;
+      if(rect(b,hitPlayer)){hurtPlayer(b.damage,Math.sign(b.vx)*7);b.life=0}
+    }});
+ bullets=bullets.filter(b=>b.life>0&&b.x>-200&&b.x<levelW+200&&b.y>-100&&b.y<H+100);
+ spikes.forEach(s=>{if(rect(player,s))hurtPlayer(22,player.x<s.x?-7:7)});
+ items.forEach(it=>{if(!it.taken&&rect(player,it)){it.taken=true;if(it.type==="heal")player.hp=Math.min(player.maxHp,player.hp+65);else if(it.type==="rapid"){player.rapid=true;player.maxStamina+=30;player.stamina=player.maxStamina}else if(it.type==="spread"){player.spread=true;player.maxHp+=30;player.hp+=30}else if(it.type==="time"){player.timeCharge=100}else if(it.type==="barrier"){player.barrier=140}else if(it.type==="berserk"){player.berserk=600}else{}burst(it.x,it.y,it.type==="heal"?"#06d6a0":it.type==="rapid"?"#b517ff":it.type==="spread"?"#00bbf9":it.type==="time"?"#ffd166":it.type==="barrier"?"#e9ecef":"#ff0035",26)}});
+ if(rect(player,goal)){let bossAlive=enemies.some(e=>!e.dead&&e.name.includes("鬼武者")||name.includes("破壊皇帝")||e.name.includes("破壊皇帝"));if(!bossAlive){clearFrame=frame;calcScore();state="clear"}}
+ if(player.commandTimer>0)player.commandTimer--;else player.command=[];if(player.pierceFlash>0)player.pierceFlash--;if(player.wideFlash>0)player.wideFlash--;if(player.ultimateFlash>0)player.ultimateFlash--;if(player.inv>0)player.inv--;if(player.slash>0)player.slash--;if(player.atkCd>0)player.atkCd--;if(player.throwCd>0)player.throwCd--;if(player.barrier>0)player.barrier-=.08;if(player.berserk>0)player.berserk--;player.stamina=Math.min(player.maxStamina,player.stamina+(player.rapid?.95:.75));player.timeCharge=Math.min(100,player.timeCharge+.05);player.ultimate=Math.min(100,player.ultimate+.025);
+ updateParticles();camX=Math.max(0,Math.min(levelW-W,player.x-W*.42));
+}
+function calcScore(){let seconds=Math.max(1,Math.floor((clearFrame-startFrame)/60));score=kills*500+Math.max(0,180-seconds)*30+Math.floor(player.hp)*4}
+function updateParticles(){particles.forEach(p=>{p.x+=p.vx;p.y+=p.vy;p.vy+=.15;p.life--});particles=particles.filter(p=>p.life>0)}
+function draw(){ctx.clearRect(0,0,W,H);drawBg();
+if(player&&player.ultimateFlash>0){
+ let t=player.ultimateFlash;
+ ctx.fillStyle=t>210?"rgba(0,0,0,.76)":(t%16<8?"rgba(255,215,0,.28)":"rgba(157,78,221,.22)");
+ ctx.fillRect(0,0,W,H);
+
+ for(let i=0;i<90;i++){
+   let x=(i*97+frame*10)%W;
+   let y=(i*53+frame*4)%H;
+   ctx.fillStyle=i%3===0?"#ffd700":i%3===1?"#ffffff":"#9d4edd";
+   ctx.fillRect(x,y,3,3);
+ }
+
+ ctx.strokeStyle="#ffffff";
+ ctx.lineWidth=20;
+ ctx.beginPath();
+ ctx.moveTo(70,H-80);
+ ctx.lineTo(W-70,80);
+ ctx.stroke();
+
+ ctx.strokeStyle="#ffd700";
+ ctx.lineWidth=9;
+ ctx.beginPath();
+ ctx.moveTo(40,H-45);
+ ctx.lineTo(W-40,45);
+ ctx.stroke();
+
+ ctx.strokeStyle="#ffd700";
+ ctx.lineWidth=5;
+ ctx.beginPath();
+ ctx.arc(W/2,H/2,130+Math.sin(frame/4)*22,0,Math.PI*2);
+ ctx.stroke();
+ ctx.beginPath();
+ ctx.arc(W/2,H/2,200+Math.cos(frame/5)*24,0,Math.PI*2);
+ ctx.stroke();
+}if(state==="title")return drawTitle();ctx.save();ctx.translate(-camX,0);drawLevel();drawGoal();items.forEach(drawItem);bullets.forEach(drawBullet);enemies.forEach(e=>{if(!e.dead)drawPerson(e,false)});drawPerson(player,true);particles.forEach(p=>{ctx.globalAlpha=p.life/28;ctx.fillStyle=p.color;ctx.fillRect(p.x,p.y,4,4);ctx.globalAlpha=1});ctx.restore();if(player&&player.pierceFlash>0){
+ ctx.strokeStyle="#ff006e";ctx.lineWidth=12;
+ ctx.beginPath();ctx.moveTo(80,H/2+80);ctx.lineTo(W-80,H/2-80);ctx.stroke();
+ ctx.fillStyle="#ff006e";ctx.font="34px system-ui";ctx.fillText("穿天一閃 成功!",330,150);
+}
+if(player&&player.wideFlash>0){
+ ctx.strokeStyle="#00ffff";ctx.lineWidth=8;
+ ctx.beginPath();ctx.arc(W/2,H/2,180-player.wideFlash*1.5,0,Math.PI*2);ctx.stroke();
+ ctx.beginPath();ctx.arc(W/2,H/2,260-player.wideFlash*2,0,Math.PI*2);ctx.stroke();
+ ctx.fillStyle="#00ffff";ctx.font="34px system-ui";ctx.fillText("蒼天爆裂陣 成功!",310,150);
+}
+drawUI();
+if(player&&player.ultimateFlash>0){
+ ctx.textAlign="center";
+ if(player.ultimateFlash>210){
+   ctx.fillStyle="#ffffff";
+   ctx.font="36px system-ui";
+   ctx.fillText("奥義解放",W/2,115);
+ }else if(player.ultimateFlash>115){
+   ctx.fillStyle=frame%10<5?"#ffd700":"#ffffff";
+   ctx.font="56px system-ui";
+   ctx.fillText(player.pierceFlash>50&&player.wideFlash>50?"禁断奥義・全敵消滅":"無限宇宙崩壊斬",W/2,120);
+ }else{
+   ctx.fillStyle="#ffd700";
+   ctx.font="34px system-ui";
+   ctx.fillText("宇宙、断つ。",W/2,120);
+ }
+ ctx.textAlign="start";
+}
+if(state==="gameover"||state==="clear")drawEnd()}
+function drawBg(){let g=ctx.createLinearGradient(0,0,0,H);g.addColorStop(0,"#1d3557");g.addColorStop(1,"#080a10");ctx.fillStyle=g;ctx.fillRect(0,0,W,H);ctx.fillStyle="rgba(255,255,220,.9)";ctx.beginPath();ctx.arc(790,70,32,0,Math.PI*2);ctx.fill();ctx.fillStyle="rgba(255,255,255,.22)";for(let i=0;i<95;i++)ctx.fillRect((i*137-camX*.2)%W,(i*71)%230+20,2,2)}
+function drawLevel(){floors.forEach(p=>{ctx.fillStyle="#557a46";ctx.fillRect(p.x,p.y,p.w,p.h);ctx.fillStyle="#314d32";ctx.fillRect(p.x,p.y+p.h-8,p.w,8)});spikes.forEach(s=>{ctx.fillStyle="#c1121f";for(let x=s.x;x<s.x+s.w;x+=15){ctx.beginPath();ctx.moveTo(x,s.y+s.h);ctx.lineTo(x+7,s.y);ctx.lineTo(x+14,s.y+s.h);ctx.fill()}})}
+function drawGoal(){let bossAlive=enemies.some(e=>!e.dead&&e.name.includes("鬼武者")||name.includes("破壊皇帝")||e.name.includes("破壊皇帝"));ctx.fillStyle=bossAlive?"#7a6c5d":"#ffd166";ctx.fillRect(goal.x,goal.y+20,14,60);ctx.fillRect(goal.x+goal.w-14,goal.y+20,14,60);ctx.fillRect(goal.x-8,goal.y+12,goal.w+16,16);ctx.fillRect(goal.x+8,goal.y,goal.w-16,16);ctx.fillStyle="#111";ctx.font="14px system-ui";ctx.fillText(bossAlive?"終末の破壊皇帝を倒せ":"GOAL",goal.x-18,goal.y-8);ctx.fillStyle="#fff";ctx.font="18px system-ui";ctx.fillText("BOSS AREA",3740,305)}
+function drawItem(it){if(it.taken)return;let col={heal:"#06d6a0",rapid:"#b517ff",spread:"#00bbf9",time:"#ffd166",barrier:"#e9ecef",berserk:"#ff0035",coin:"#ffd166"}[it.type];ctx.fillStyle=col;ctx.beginPath();ctx.arc(it.x+it.w/2,it.y+it.h/2,it.w/2,0,Math.PI*2);ctx.fill();ctx.fillStyle="#111";ctx.font="16px system-ui";let t={heal:"+",rapid:"P",spread:"S",time:"T",barrier:"B",berserk:"R",coin:"¥"}[it.type];ctx.fillText(t,it.x+8,it.y+20)}
+function drawBullet(b){ctx.fillStyle=b.owner==="player"?"#90e0ef":b.kind==="dark"?"#9d4edd":b.kind==="rock"?"#adb5bd":b.kind==="fire"?"#ff5400":"#ffb703";if(b.kind==="rock"){ctx.beginPath();ctx.arc(b.x+b.w/2,b.y+b.h/2,b.w/2,0,Math.PI*2);ctx.fill()}else ctx.fillRect(b.x,b.y,b.w,b.h)}
+function drawPerson(c,isPlayer){let cx=c.x+c.w/2,dir=c.dir,flash=(!isPlayer&&c.hit>0)||(isPlayer&&c.inv>0&&frame%6<3);ctx.globalAlpha=flash?.55:1;ctx.fillStyle="rgba(0,0,0,.35)";ctx.beginPath();ctx.ellipse(cx,c.y+c.h+5,c.w*.7,7,0,0,Math.PI*2);ctx.fill();ctx.strokeStyle=isPlayer?"#1d3557":"#2b1d1d";ctx.lineWidth=c.name?.includes("ボス")?8:5;ctx.beginPath();ctx.moveTo(cx-7,c.y+c.h-24);ctx.lineTo(cx-15,c.y+c.h-2);ctx.moveTo(cx+7,c.y+c.h-24);ctx.lineTo(cx+13,c.y+c.h-2);ctx.stroke();ctx.fillStyle=isPlayer?"#00f5d4":c.name.includes("鬼武者")||name.includes("破壊皇帝")||c.name.includes("破壊皇帝")||e.name.includes("破壊皇帝")?"#720026":c.name.includes("重装")?"#6c584c":c.name.includes("弓")?"#99582a":c.name.includes("忍")?"#22223b":c.name.includes("火")?"#d00000":"#9b2226";ctx.fillRect(cx-c.w*.32,c.y+23,c.w*.64,c.h*.48);ctx.fillStyle=isPlayer?"#f1c27d":"#c58c5c";ctx.beginPath();ctx.arc(cx,c.y+14,c.name?.includes("ボス")?15:11,0,Math.PI*2);ctx.fill();ctx.fillStyle="#111";ctx.fillRect(cx-11,c.y+4,22,8);ctx.fillRect(cx+dir*2,c.y+12,4,3);ctx.strokeStyle=isPlayer?"#e9ecef":"#cfd2d4";ctx.lineWidth=isPlayer?4:3;ctx.beginPath();ctx.moveTo(cx+dir*15,c.y+35);ctx.lineTo(cx+dir*(c.name?.includes("ボス")?55:38),c.y+17);ctx.stroke();if(isPlayer&&c.slash>0){ctx.strokeStyle=c.combo===3?"#ff006e":"#f72585";ctx.lineWidth=c.combo===3?9:6;ctx.beginPath();ctx.arc(dir>0?c.x+62:c.x-22,c.y+30,c.combo===3?36:28,dir>0?-1.15:2,dir>0?.85:4.2);ctx.stroke()}if(isPlayer&&c.ultimate>=100){
+ ctx.strokeStyle=frame%20<10?"#ffd700":"#ffffff";
+ ctx.lineWidth=4;
+ ctx.beginPath();
+ ctx.arc(cx,c.y+30,48+Math.sin(frame/5)*6,0,Math.PI*2);
+ ctx.stroke();
+ ctx.fillStyle="rgba(255,215,0,.26)";
+ ctx.beginPath();
+ ctx.ellipse(cx,c.y+c.h+8,58+Math.sin(frame/6)*8,12,0,0,Math.PI*2);
+ ctx.fill();
+ for(let i=0;i<8;i++){
+   ctx.fillStyle=i%2===0?"#ffd700":"#ffffff";
+   ctx.fillRect(cx+Math.cos(frame/9+i)*44,c.y+30+Math.sin(frame/9+i)*44,4,4);
+ }
+}
+if(isPlayer&&c.barrier>0){ctx.strokeStyle="#e9ecef";ctx.lineWidth=3;ctx.beginPath();ctx.arc(cx,c.y+30,42,0,Math.PI*2);ctx.stroke()}if(isPlayer&&c.crouch){
+      // 残像＋回避オーラ
+      ctx.fillStyle="rgba(0,255,255,.25)";
+      ctx.beginPath();
+      ctx.ellipse(cx,c.y+48,38,14,0,0,Math.PI*2);
+      ctx.fill();
+
+      ctx.strokeStyle=frame%12<6?"#00ffff":"#ffffff";
+      ctx.lineWidth=3;
+      ctx.beginPath();
+      ctx.arc(cx,c.y+42,24,0,Math.PI*2);
+      ctx.stroke();
+
+      for(let i=0;i<6;i++){
+        ctx.fillStyle=i%2===0?"#00ffff":"#ffffff";
+        ctx.fillRect(cx-20+i*8,c.y+28+Math.sin(frame/4+i)*4,3,3);
+      }
+
+      ctx.fillStyle="rgba(255,255,0,.8)";
+      ctx.fillRect(cx-18,c.y+40,36,16);
+    }
+ctx.globalAlpha=1;if(!isPlayer){ctx.fillStyle="#111";ctx.fillRect(c.x,c.y-15,c.w,6);ctx.fillStyle=c.frozen>0?"#90e0ef":c.rage?"#ff006e":c.name.includes("鬼武者")||name.includes("破壊皇帝")||c.name.includes("破壊皇帝")||e.name.includes("破壊皇帝")?"#f72585":"#ffd166";ctx.fillRect(c.x,c.y-15,c.w*(c.hp/c.maxHp),6)}}
+function drawUI(){let sec=startFrame?Math.floor((frame-startFrame)/60):0;ctx.fillStyle="rgba(0,0,0,.58)";ctx.fillRect(14,12,620,102);ctx.fillStyle="#fff";ctx.font="16px system-ui";ctx.fillText("HP",26,35);ctx.fillStyle="#333";ctx.fillRect(62,22,230,16);ctx.fillStyle="#ef233c";ctx.fillRect(62,22,230*(player.hp/player.maxHp),16);ctx.strokeStyle="#fff";ctx.strokeRect(62,22,230,16);ctx.fillStyle="#fff";ctx.fillText("気力",26,64);ctx.fillStyle="#333";ctx.fillRect(62,51,230,14);ctx.fillStyle="#4cc9f0";ctx.fillRect(62,51,230*(player.stamina/player.maxStamina),14);ctx.strokeStyle="#fff";ctx.strokeRect(62,51,230,14);ctx.fillStyle="#fff";ctx.fillText("TIME: "+sec+"s",310,35);ctx.fillText("KILL: "+kills,310,64);ctx.fillText("T: "+Math.floor(player.timeCharge)+"%",405,35);ctx.fillText("Barrier: "+Math.max(0,Math.floor(player.barrier)),405,64);ctx.fillText("連射:"+(player.rapid?"ON":"OFF")+" 3方向:"+(player.spread?"ON":"OFF"),26,94);ctx.fillText("Berserk:"+(player.berserk>0?Math.ceil(player.berserk/60)+"s":"OFF"),310,94);ctx.fillText("CMD:"+player.command.join(""),500,94);ctx.fillText("技: ↓Z / ↓X",500,114);ctx.fillText("禁断: ↑↑↓↓←→←→ZXG",500,134);if(player.x>3400){ctx.fillStyle="#ff006e";ctx.fillText("終末の破壊皇帝 接近中",500,94)}}
+function drawTitle(){ctx.fillStyle="rgba(0,0,0,.45)";ctx.fillRect(0,0,W,H);ctx.fillStyle="#fff";ctx.font="54px system-ui";ctx.fillText("SHADOW RUNNER EX",220,180);ctx.font="24px system-ui";ctx.fillText("画面をクリックしてから Enter",330,245);ctx.font="17px system-ui";ctx.fillText("超必殺技『無限宇宙崩壊斬』ボス復帰修正版",230,300)}
+function drawEnd(){ctx.fillStyle=state==="clear"?"rgba(0,50,20,.75)":"rgba(50,0,0,.75)";ctx.fillRect(0,0,W,H);ctx.fillStyle="#fff";ctx.font="54px system-ui";ctx.fillText(state==="clear"?"STAGE CLEAR!":"GAME OVER",300,210);ctx.font="22px system-ui";let sec=clearFrame?Math.floor((clearFrame-startFrame)/60):Math.floor((frame-startFrame)/60);ctx.fillText("TIME: "+sec+"s / KILL: "+kills+" / SCORE: "+score,300,265);ctx.fillText("Rでタイトルに戻る",390,315)}
+function loop(){update();draw();requestAnimationFrame(loop)}
+resetGame(true);loop();
+</script>
+</body>
+</html>
