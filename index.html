@@ -1,0 +1,141 @@
+<!doctype html>
+<html lang="ja">
+<head>
+<meta charset="utf-8">
+<title>Shadow Runner Ultimate Edition</title>
+<style>
+body{margin:0;background:#080a10;color:white;font-family:system-ui;text-align:center}
+canvas{display:block;margin:16px auto;border:3px solid #fff;background:#111}
+.info{font-size:14px;color:#ddd;line-height:1.7}
+</style>
+</head>
+<body>
+<h2>Shadow Runner Ultimate Edition</h2>
+<canvas id="game" width="960" height="540" tabindex="0"></canvas>
+<div class="info">
+画面クリック → Enter開始<br>
+←→移動 / ↓しゃがむ / Spaceジャンプ / Z斬り / X手裏剣 / E天雷剣 / V長時間バリア / Lレーザー / G超必殺 / Uウルトラビーム / Rリスタート<br>
+ボス5体を倒すとゴールが開きます。金UアイテムでULT満タン。
+</div>
+<script>
+const canvas=document.getElementById("game"),ctx=canvas.getContext("2d");canvas.focus();
+const W=960,H=540,levelW=4300,gravity=.72,keys={};
+let state="title",frame=0,camX=0,kills=0,score=0;
+let player,enemies,bullets,items,particles;
+const floors=[
+{x:0,y:470,w:620,h:70},{x:700,y:420,w:220,h:28},{x:1000,y:360,w:220,h:28},
+{x:1280,y:470,w:520,h:70},{x:1850,y:410,w:240,h:28},{x:2200,y:470,w:520,h:70},
+{x:2780,y:470,w:1450,h:70}
+];
+const spikes=[{x:630,y:452,w:55,h:18},{x:1230,y:452,w:55,h:18},{x:2730,y:452,w:45,h:18}];
+const goal={x:4130,y:390,w:70,h:80};
+
+function resetGame(toTitle=true){
+ state=toTitle?"title":"play"; frame=0; camX=0; kills=0; score=0;
+ player={x:70,y:390,w:38,h:62,vx:0,vy:0,dir:1,onGround:false,crouch:false,
+ hp:300,maxHp:300,stamina:220,maxStamina:220,ult:0,inv:0,
+ slash:0,atkCd:0,throwCd:0,laserFlash:0,thunderFlash:0,thunderCd:0,
+ barrier:0,barrierCd:0,ultimateFlash:0,ultraFlash:0,rapid:false,spread:false};
+ enemies=[
+ makeEnemy("終焉の魔剣士",390,408,520,700,1.4,24,"melee"),
+ makeEnemy("天罰の狙撃手",790,358,420,160,1.0,22,"arrow"),
+ makeEnemy("虚無の暗殺者",1080,298,500,180,2.1,28,"shuriken"),
+ makeEnemy("絶対防壁の守護神",1450,408,900,260,0.9,38,"rock"),
+ makeEnemy("獄炎魔導王",1950,348,700,230,0.8,36,"fire"),
+ makeEnemy("冥界竜騎兵",2350,408,800,280,1.3,34,"spear"),
+ makeEnemy("超越神・終末の破壊皇帝",2920,320,5000,330,1.00,68,"boss"),
+ makeEnemy("暗黒竜王・滅界の覇者",3180,320,5400,330,0.95,72,"boss"),
+ makeEnemy("虚空神・無限破壊者",3440,320,8000,330,0.82,82,"boss"),
+ makeEnemy("深淵神・滅亡の支配者",3700,320,9000,330,0.78,90,"boss"),
+ makeEnemy("星喰い神・終極王",3960,320,12000,330,0.72,100,"boss")
+ ];
+ bullets=[];particles=[];
+ items=[
+ {type:"heal",x:720,y:370,w:26,h:26,taken:false},{type:"rapid",x:1040,y:310,w:28,h:28,taken:false},
+ {type:"spread",x:1880,y:360,w:28,h:28,taken:false},{type:"heal",x:2250,y:420,w:26,h:26,taken:false},
+ {type:"ult",x:2820,y:420,w:30,h:30,taken:false},{type:"heal",x:3300,y:420,w:26,h:26,taken:false},
+ {type:"ult",x:3650,y:420,w:30,h:30,taken:false}
+ ];
+}
+function isBoss(e){return e.name.includes("破壊皇帝")||e.name.includes("覇者")||e.name.includes("無限破壊者")||e.name.includes("支配者")||e.name.includes("終極王")}
+function makeEnemy(name,x,y,hp,range,speed,damage,weapon){
+ const boss=name.includes("破壊皇帝")||name.includes("覇者")||name.includes("無限破壊者")||name.includes("支配者")||name.includes("終極王");
+ return {name,x,y,w:boss?110:42,h:boss?138:62,vx:0,vy:0,dir:-1,onGround:false,hp,maxHp:hp,min:x-range/2,max:x+range/2,speed,damage,weapon,cd:60,hit:0,dead:false,rage:false};
+}
+function rect(a,b){return a.x<b.x+b.w&&a.x+a.w>b.x&&a.y<b.y+b.h&&a.y+a.h>b.y}
+function land(o,p){if(o.x+o.w>p.x&&o.x<p.x+p.w&&o.y+o.h<=p.y+18&&o.y+o.h+o.vy>=p.y){o.y=p.y-o.h;o.vy=0;o.onGround=true}}
+function groundAhead(e,nx){let foot=e.y+e.h+10,front=nx+(e.dir>0?e.w+8:-8);return floors.some(p=>front>=p.x&&front<=p.x+p.w&&foot>=p.y-80&&foot<=p.y+24)}
+function burst(x,y,color,n){for(let i=0;i<n;i++)particles.push({x,y,vx:(Math.random()*2-1)*5,vy:(Math.random()*2-1)*5-2,life:30,color})}
+function hurtPlayer(dmg,knock){
+ if(player.inv>0||state!=="play")return;
+ if(player.barrier>0){player.barrier-=dmg;burst(player.x+20,player.y+25,"#e9ecef",12);return}
+ player.hp-=dmg;player.inv=35;player.vx=knock;player.vy=-5;burst(player.x+20,player.y+25,"#ff595e",16);
+ if(player.hp<=0){player.hp=0;state="gameover"}
+}
+function damageEnemy(e,dmg,knock){
+ if(e.dead)return;
+ if(isBoss(e))dmg=Math.floor(dmg*.55);
+ e.hp-=dmg;e.x+=knock;e.x=Math.max(e.min,Math.min(e.max-e.w,e.x));e.hit=10;
+ if(e.hp<e.maxHp*.45)e.rage=true; burst(e.x+e.w/2,e.y+e.h/2,"#ffd166",12);
+ if(e.hp<=0){e.dead=true;kills++;player.ult=Math.min(100,player.ult+12);score+=isBoss(e)?5000:300;burst(e.x+e.w/2,e.y+e.h/2,"#fff",50)}
+}
+document.addEventListener("keydown",e=>{
+ keys[e.key]=true; const k=e.key.toLowerCase();
+ if([" ","arrowleft","arrowright","arrowdown"].includes(k))e.preventDefault();
+ if(k==="enter"&&state==="title")state="play"; if(k==="r")resetGame(true); if(state!=="play")return;
+ if(e.key===" "&&player.onGround&&!player.crouch){player.vy=-14;player.onGround=false;burst(player.x+20,player.y+60,"#8ecae6",8)}
+ if(k==="z"&&player.atkCd<=0&&player.stamina>=15){player.slash=12;player.atkCd=14;player.stamina-=15}
+ if(k==="x"&&player.throwCd<=0&&player.stamina>=12){fireShuriken();player.throwCd=player.rapid?6:20;player.stamina-=player.rapid?7:14}
+ if(k==="e"&&player.stamina>=45&&player.thunderCd<=0){thunderBlade();player.stamina-=45;player.thunderCd=90}
+ if(k==="v"&&player.stamina>=55&&player.barrierCd<=0){player.barrier=520;player.barrierCd=180;player.stamina-=55;burst(player.x+20,player.y+25,"#e9ecef",35)}
+ if(k==="l"&&player.stamina>=60&&player.ult>=25){fireLaser();player.stamina-=60;player.ult-=25}
+ if(k==="g"&&player.ult>=100){ultimate()}
+ if(k==="u"&&player.ult>=100&&player.stamina>=120){ultraBeam();player.ult=0;player.stamina-=120}
+});
+document.addEventListener("keyup",e=>keys[e.key]=false);canvas.addEventListener("click",()=>canvas.focus());
+
+function fireShuriken(){let base={owner:"player",kind:"shu",x:player.x+20,y:player.y+24,w:24,h:8,vx:player.dir*10,vy:0,damage:65,life:110,pierce:player.rapid?2:0};bullets.push({...base});if(player.spread){bullets.push({...base,vy:-2,damage:50});bullets.push({...base,vy:2,damage:50})}}
+function thunderBlade(){player.thunderFlash=40;let r={x:player.dir>0?player.x+10:player.x-190,y:player.y-60,w:230,h:150};enemies.forEach(e=>{if(!e.dead&&rect(r,e)){damageEnemy(e,isBoss(e)?620:1200,player.dir*18);e.cd=Math.max(e.cd,35);burst(e.x+e.w/2,e.y+e.h/2,"#00ffff",45)}});bullets=bullets.filter(b=>b.owner==="player");burst(player.x+20,player.y+20,"#00ffff",35)}
+function fireLaser(){player.laserFlash=35;let beam={x:player.dir>0?player.x:player.x-800,y:player.y+8,w:830,h:90};enemies.forEach(e=>{if(!e.dead&&rect(beam,e))damageEnemy(e,isBoss(e)?1300:2400,player.dir*20)});bullets=bullets.filter(b=>b.owner==="player");burst(player.x+20,player.y+25,"#ff1744",40)}
+function ultimate(){player.ult=0;player.ultimateFlash=180;bullets=[];enemies.forEach(e=>{if(!e.dead){if(isBoss(e)){e.hp-=Math.floor(e.maxHp*.25);e.cd=90;burst(e.x+e.w/2,e.y+e.h/2,"#ffd700",100)}else{e.hp=0;e.dead=true;kills++;burst(e.x+e.w/2,e.y+e.h/2,"#fff",70)}}})}
+function ultraBeam(){player.ultraFlash=220;bullets=[];enemies.forEach(e=>{if(!e.dead){if(isBoss(e)){e.hp-=Math.floor(e.maxHp*.55);e.cd=180;e.rage=true;burst(e.x+e.w/2,e.y+e.h/2,"#ffffff",180);burst(e.x+e.w/2,e.y+e.h/2,"#00ffff",120)}else{e.hp=0;e.dead=true;kills++;burst(e.x+e.w/2,e.y+e.h/2,"#ffffff",100)}}});player.barrier=600;player.hp=Math.min(player.maxHp,player.hp+120)}
+function enemyShoot(e){let s=e.rage?7.2:5.8;
+ if(e.weapon==="arrow")bullets.push({owner:"enemy",kind:"arrow",x:e.x+e.w/2,y:e.y+25,w:24,h:7,vx:e.dir*s,vy:0,damage:e.damage,life:150});
+ if(e.weapon==="shuriken")bullets.push({owner:"enemy",kind:"shu",x:e.x+e.w/2,y:e.y+25,w:18,h:8,vx:e.dir*(s+1),vy:0,damage:e.damage,life:130});
+ if(e.weapon==="rock")bullets.push({owner:"enemy",kind:"rock",x:e.x+e.w/2,y:e.y+20,w:20,h:20,vx:e.dir*4.2,vy:-4,damage:e.damage,life:140});
+ if(e.weapon==="fire")bullets.push({owner:"enemy",kind:"fire",x:e.x+e.w/2,y:e.y+25,w:26,h:12,vx:e.dir*5.5,vy:Math.sin(frame/12)*1.5,damage:e.damage,life:150});
+ if(e.weapon==="boss"){bullets.push({owner:"enemy",kind:"dark",x:e.x+e.w/2,y:e.y+55,w:40,h:14,vx:e.dir*(e.rage?7.5:6),vy:0,damage:e.rage?55:42,life:180});bullets.push({owner:"enemy",kind:"fire",x:e.x+e.w/2,y:e.y+25,w:30,h:12,vx:e.dir*6,vy:-2,damage:35,life:160});bullets.push({owner:"enemy",kind:"fire",x:e.x+e.w/2,y:e.y+95,w:30,h:12,vx:e.dir*6,vy:2,damage:35,life:160})}
+}
+function update(){frame++;if(state!=="play"){updateParticles();return}
+ player.crouch=keys["ArrowDown"]||keys["s"];player.vx*=player.onGround?.78:.94;
+ if(keys["ArrowLeft"]){player.vx-=.9;player.dir=-1} if(keys["ArrowRight"]){player.vx+=.9;player.dir=1} if(player.crouch)player.vx*=.65;
+ player.vx=Math.max(-5.4,Math.min(5.4,player.vx));player.vy+=gravity;player.x+=player.vx;player.y+=player.vy;player.onGround=false;floors.forEach(p=>land(player,p));player.x=Math.max(0,Math.min(levelW-player.w,player.x));if(player.y>H+120)hurtPlayer(999,0);
+ if(player.slash>0){let box={x:player.dir>0?player.x+25:player.x-65,y:player.y+8,w:90,h:55};if(player.slash>6)enemies.forEach(e=>{if(!e.dead&&rect(box,e))damageEnemy(e,90,player.dir*12)})}
+ enemies.forEach(e=>{if(e.dead)return;let dist=(player.x+20)-(e.x+e.w/2);e.dir=dist>0?1:-1;e.cd--;let range=e.weapon==="melee"||e.weapon==="spear"?290:520;
+ if(Math.abs(dist)<range&&e.weapon!=="melee"&&e.weapon!=="spear"&&e.cd<=0){enemyShoot(e);e.cd=e.weapon==="boss"?(e.rage?45:65):(e.rage?45:70)}
+ let desired=Math.abs(dist)<range?e.dir*e.speed*(e.rage?1.25:1):e.speed*(e.x<e.min?1:e.x+e.w>e.max?-1:e.dir);let nx=e.x+desired;if(e.onGround&&!groundAhead(e,nx))desired=0;
+ e.vy+=gravity;e.x+=desired;e.y+=e.vy;e.onGround=false;floors.forEach(p=>land(e,p));if(e.x<e.min)e.x=e.min;if(e.x+e.w>e.max)e.x=e.max-e.w;if(e.y>H+200){e.x=(e.min+e.max)/2;e.y=250;e.vy=0}if(e.hit>0)e.hit--;if(rect(player,e)&&e.cd<=0){hurtPlayer(e.damage,e.dir*7);e.cd=55}});
+ bullets.forEach(b=>{b.x+=b.vx;b.y+=b.vy||0;if(b.kind==="rock")b.vy+=.18;b.life--;if(b.owner==="player"){enemies.forEach(e=>{if(!e.dead&&rect(b,e)){damageEnemy(e,b.damage,Math.sign(b.vx)*12);if(b.pierce>0)b.pierce--;else b.life=0}})}else{let hit=player.crouch?{x:player.x,y:player.y+38,w:player.w,h:player.h-38}:player;if(rect(b,hit)){hurtPlayer(b.damage,Math.sign(b.vx)*6);b.life=0}}});
+ bullets=bullets.filter(b=>b.life>0&&b.x>-200&&b.x<levelW+200&&b.y>-100&&b.y<H+100);
+ spikes.forEach(s=>{if(rect(player,s))hurtPlayer(18,player.x<s.x?-7:7)});
+ items.forEach(it=>{if(!it.taken&&rect(player,it)){it.taken=true;if(it.type==="heal")player.hp=Math.min(player.maxHp,player.hp+80);if(it.type==="rapid"){player.rapid=true;player.maxStamina+=25;player.stamina=player.maxStamina}if(it.type==="spread"){player.spread=true;player.maxHp+=30;player.hp+=30}if(it.type==="ult")player.ult=100;burst(it.x,it.y,it.type==="heal"?"#06d6a0":it.type==="rapid"?"#b517ff":it.type==="spread"?"#00bbf9":"#ffd700",28)}});
+ if(rect(player,goal)&&!enemies.some(e=>!e.dead&&isBoss(e)))state="clear";
+ if(player.barrier>0)player.barrier-=.04;if(player.barrierCd>0)player.barrierCd--;if(player.thunderCd>0)player.thunderCd--;if(player.thunderFlash>0)player.thunderFlash--;if(player.inv>0)player.inv--;if(player.slash>0)player.slash--;if(player.atkCd>0)player.atkCd--;if(player.throwCd>0)player.throwCd--;if(player.laserFlash>0)player.laserFlash--;if(player.ultimateFlash>0)player.ultimateFlash--;if(player.ultraFlash>0)player.ultraFlash--;
+ player.stamina=Math.min(player.maxStamina,player.stamina+.8);player.ult=Math.min(100,player.ult+.025);updateParticles();camX=Math.max(0,Math.min(levelW-W,player.x-W*.42))}
+function updateParticles(){particles.forEach(p=>{p.x+=p.vx;p.y+=p.vy;p.vy+=.15;p.life--});particles=particles.filter(p=>p.life>0)}
+function draw(){ctx.clearRect(0,0,W,H);drawBg();if(state==="title"){drawTitle();return}ctx.save();ctx.translate(-camX,0);drawLevel();drawGoal();items.forEach(drawItem);bullets.forEach(drawBullet);enemies.forEach(e=>{if(!e.dead)drawPerson(e,false)});drawPerson(player,true);particles.forEach(p=>{ctx.globalAlpha=p.life/30;ctx.fillStyle=p.color;ctx.fillRect(p.x,p.y,4,4);ctx.globalAlpha=1});ctx.restore();drawEffects();drawUI();if(state==="gameover"||state==="clear")drawEnd()}
+function drawBg(){let g=ctx.createLinearGradient(0,0,0,H);g.addColorStop(0,"#1d3557");g.addColorStop(1,"#080a10");ctx.fillStyle=g;ctx.fillRect(0,0,W,H);ctx.fillStyle="rgba(255,255,220,.9)";ctx.beginPath();ctx.arc(790,70,32,0,Math.PI*2);ctx.fill();ctx.fillStyle="rgba(255,255,255,.22)";for(let i=0;i<80;i++)ctx.fillRect((i*137-camX*.2)%W,(i*71)%230+20,2,2)}
+function drawLevel(){floors.forEach(p=>{ctx.fillStyle="#557a46";ctx.fillRect(p.x,p.y,p.w,p.h);ctx.fillStyle="#314d32";ctx.fillRect(p.x,p.y+p.h-8,p.w,8)});spikes.forEach(s=>{ctx.fillStyle="#c1121f";for(let x=s.x;x<s.x+s.w;x+=15){ctx.beginPath();ctx.moveTo(x,s.y+s.h);ctx.lineTo(x+7,s.y);ctx.lineTo(x+14,s.y+s.h);ctx.fill()}})}
+function drawGoal(){let locked=enemies.some(e=>!e.dead&&isBoss(e));ctx.fillStyle=locked?"#7a6c5d":"#ffd166";ctx.fillRect(goal.x,goal.y+20,14,60);ctx.fillRect(goal.x+goal.w-14,goal.y+20,14,60);ctx.fillRect(goal.x-8,goal.y+12,goal.w+16,16);ctx.fillRect(goal.x+8,goal.y,goal.w-16,16);ctx.fillStyle="#111";ctx.font="14px system-ui";ctx.fillText(locked?"ボス5体を倒せ":"GOAL",goal.x-12,goal.y-8)}
+function drawItem(it){if(it.taken)return;let col={heal:"#06d6a0",rapid:"#b517ff",spread:"#00bbf9",ult:"#ffd700"}[it.type];let txt={heal:"+",rapid:"P",spread:"S",ult:"U"}[it.type];ctx.fillStyle=col;ctx.beginPath();ctx.arc(it.x+it.w/2,it.y+it.h/2,it.w/2,0,Math.PI*2);ctx.fill();ctx.fillStyle="#111";ctx.font="16px system-ui";ctx.fillText(txt,it.x+8,it.y+20)}
+function drawBullet(b){ctx.fillStyle=b.owner==="player"?"#90e0ef":b.kind==="dark"?"#9d4edd":b.kind==="fire"?"#ff5400":b.kind==="rock"?"#adb5bd":"#ffb703";if(b.kind==="rock"){ctx.beginPath();ctx.arc(b.x+b.w/2,b.y+b.h/2,b.w/2,0,Math.PI*2);ctx.fill()}else ctx.fillRect(b.x,b.y,b.w,b.h)}
+function drawPerson(c,isPlayer){let cx=c.x+c.w/2,dir=c.dir,boss=!isPlayer&&isBoss(c);ctx.globalAlpha=(isPlayer&&c.inv>0&&frame%6<3)||(!isPlayer&&c.hit>0)?.55:1;ctx.fillStyle="rgba(0,0,0,.35)";ctx.beginPath();ctx.ellipse(cx,c.y+c.h+5,c.w*.7,7,0,0,Math.PI*2);ctx.fill();if(boss){ctx.fillStyle=c.name.includes("終極王")?"rgba(255,215,0,.18)":c.name.includes("支配者")?"rgba(80,0,120,.20)":c.name.includes("無限破壊者")?"rgba(0,180,255,.20)":c.name.includes("覇者")?"rgba(157,78,221,.18)":"rgba(255,0,80,.18)";ctx.beginPath();ctx.arc(cx,c.y+78,100,0,Math.PI*2);ctx.fill();ctx.fillStyle=c.name.includes("終極王")?"#3d2b00":c.name.includes("支配者")?"#21002e":c.name.includes("無限破壊者")?"#001d3d":c.name.includes("覇者")?"#12002b":"#2b0504";ctx.fillRect(cx-42,c.y+42,84,74);ctx.fillStyle="#c58c5c";ctx.beginPath();ctx.arc(cx,c.y+28,26,0,Math.PI*2);ctx.fill();ctx.fillStyle="#fff";ctx.fillRect(cx-25,c.y+9,50,12);ctx.fillStyle="#ff0035";ctx.fillRect(cx-13,c.y+28,8,5);ctx.fillRect(cx+5,c.y+28,8,5);ctx.strokeStyle="#cfd2d4";ctx.lineWidth=7;ctx.beginPath();ctx.moveTo(cx+dir*45,c.y+68);ctx.lineTo(cx+dir*88,c.y+25);ctx.stroke()}else{let body=isPlayer?"#00f5d4":c.name.includes("防壁")?"#6c584c":c.name.includes("狙撃")?"#99582a":c.name.includes("暗殺")?"#22223b":c.name.includes("獄炎")?"#d00000":"#9b2226";ctx.strokeStyle=isPlayer?"#1d3557":"#2b1d1d";ctx.lineWidth=5;ctx.beginPath();ctx.moveTo(cx-7,c.y+c.h-24);ctx.lineTo(cx-15,c.y+c.h-2);ctx.moveTo(cx+7,c.y+c.h-24);ctx.lineTo(cx+13,c.y+c.h-2);ctx.stroke();ctx.fillStyle=body;ctx.fillRect(cx-c.w*.32,c.y+23,c.w*.64,c.h*.48);ctx.fillStyle=isPlayer?"#f1c27d":"#c58c5c";ctx.beginPath();ctx.arc(cx,c.y+14,11,0,Math.PI*2);ctx.fill();ctx.fillStyle="#111";ctx.fillRect(cx-11,c.y+4,22,8);ctx.fillRect(cx+dir*2,c.y+12,4,3);ctx.strokeStyle=isPlayer?"#e9ecef":"#cfd2d4";ctx.lineWidth=isPlayer?4:3;ctx.beginPath();ctx.moveTo(cx+dir*15,c.y+35);ctx.lineTo(cx+dir*38,c.y+17);ctx.stroke()}if(isPlayer&&c.barrier>0){ctx.strokeStyle="#e9ecef";ctx.lineWidth=5;ctx.beginPath();ctx.arc(cx,c.y+30,48+Math.sin(frame/6)*5,0,Math.PI*2);ctx.stroke()}if(isPlayer&&c.thunderCd<=0){ctx.strokeStyle="#00ffff";ctx.lineWidth=3;ctx.beginPath();ctx.arc(cx,c.y+30,42+Math.sin(frame/5)*4,0,Math.PI*2);ctx.stroke()}if(isPlayer&&c.slash>0){ctx.strokeStyle="#f72585";ctx.lineWidth=7;ctx.beginPath();ctx.arc(dir>0?c.x+62:c.x-22,c.y+30,34,dir>0?-1.15:2,dir>0?.85:4.2);ctx.stroke()}if(isPlayer&&c.crouch){ctx.strokeStyle="#00ffff";ctx.lineWidth=3;ctx.beginPath();ctx.arc(cx,c.y+42,26,0,Math.PI*2);ctx.stroke()}if(isPlayer&&c.ult>=100){ctx.strokeStyle=frame%20<10?"#ffd700":"#fff";ctx.lineWidth=4;ctx.beginPath();ctx.arc(cx,c.y+30,50+Math.sin(frame/5)*5,0,Math.PI*2);ctx.stroke()}ctx.globalAlpha=1;if(!isPlayer){ctx.fillStyle="#111";ctx.fillRect(c.x,c.y-15,c.w,7);ctx.fillStyle=boss?"#f72585":"#ffd166";ctx.fillRect(c.x,c.y-15,c.w*(c.hp/c.maxHp),7)}}
+function drawEffects(){if(player.thunderFlash>0){ctx.save();ctx.globalAlpha=.9;ctx.strokeStyle="#00ffff";ctx.lineWidth=10;let sx=player.x-camX+20,sy=player.y+25,ex=player.dir>0?sx+230:sx-230;ctx.beginPath();ctx.moveTo(sx,sy);for(let i=0;i<8;i++){let x=sx+(ex-sx)*i/7,y=sy+Math.sin(frame+i)*35+(i%2===0?-18:18);ctx.lineTo(x,y)}ctx.stroke();ctx.restore();ctx.fillStyle="#00ffff";ctx.font="36px system-ui";ctx.fillText("天雷剣・雷神裂空",285,180)}if(player.laserFlash>0){ctx.save();ctx.globalAlpha=.85;ctx.fillStyle="#ff1744";let bx=player.dir>0?player.x-camX+30:player.x-camX-800;ctx.fillRect(bx,player.y+20,800,28);ctx.fillStyle="#fff";ctx.fillRect(bx,player.y+30,800,8);ctx.restore();ctx.fillStyle="#ff1744";ctx.font="36px system-ui";ctx.fillText("滅星レーザー",330,185)}if(player.ultimateFlash>0){ctx.fillStyle=player.ultimateFlash%16<8?"rgba(255,215,0,.22)":"rgba(157,78,221,.18)";ctx.fillRect(0,0,W,H);ctx.fillStyle="#ffd700";ctx.font="48px system-ui";ctx.textAlign="center";ctx.fillText("無限宇宙崩壊斬",W/2,120);ctx.textAlign="start"}if(player.ultraFlash>0){ctx.fillStyle=player.ultraFlash%12<6?"rgba(255,255,255,.50)":"rgba(0,255,255,.32)";ctx.fillRect(0,0,W,H);ctx.fillStyle="#fff";ctx.fillRect(0,H/2-70,W,140);ctx.fillStyle="#00ffff";ctx.fillRect(0,H/2-35,W,70);ctx.textAlign="center";ctx.fillStyle="#111";ctx.font="54px system-ui";ctx.fillText("究極奥義 ウルトラビーム",W/2,125);ctx.textAlign="start"}}
+function drawUI(){ctx.fillStyle="rgba(0,0,0,.6)";ctx.fillRect(14,12,690,122);ctx.fillStyle="#fff";ctx.font="16px system-ui";ctx.fillText("HP",26,35);ctx.fillStyle="#333";ctx.fillRect(62,22,230,16);ctx.fillStyle="#ef233c";ctx.fillRect(62,22,230*(player.hp/player.maxHp),16);ctx.strokeStyle="#fff";ctx.strokeRect(62,22,230,16);ctx.fillStyle="#fff";ctx.fillText("気力",26,64);ctx.fillStyle="#333";ctx.fillRect(62,51,230,14);ctx.fillStyle="#4cc9f0";ctx.fillRect(62,51,230*(player.stamina/player.maxStamina),14);ctx.strokeStyle="#fff";ctx.strokeRect(62,51,230,14);let alive=enemies.filter(e=>!e.dead&&isBoss(e)).length;ctx.fillStyle="#fff";ctx.fillText("KILL:"+kills,310,35);ctx.fillText("ULT:"+Math.floor(player.ult)+"%",310,64);ctx.fillText("BOSS残り:"+alive,410,35);ctx.fillText("E=天雷剣 / V=バリア / L=レーザー",410,64);ctx.fillText(player.ult>=100?"U=ウルトラビーム READY":"U=ウルトラビーム ULT100必要",410,92);ctx.fillText(player.barrierCd<=0?"V=バリア READY":"バリア CD:"+Math.ceil(player.barrierCd/60)+"秒",26,94)}
+function drawTitle(){ctx.fillStyle="rgba(0,0,0,.45)";ctx.fillRect(0,0,W,H);ctx.fillStyle="#fff";ctx.font="46px system-ui";ctx.fillText("SHADOW RUNNER Ultimate Edition",115,180);ctx.font="24px system-ui";ctx.fillText("画面をクリックしてから Enter",330,245);ctx.font="17px system-ui";ctx.fillText("ボス5体を確実に配置。Uキーで究極奥義ウルトラビーム。",245,300)}
+function drawEnd(){ctx.fillStyle=state==="clear"?"rgba(0,50,20,.75)":"rgba(50,0,0,.75)";ctx.fillRect(0,0,W,H);ctx.fillStyle="#fff";ctx.font="54px system-ui";ctx.fillText(state==="clear"?"STAGE CLEAR!":"GAME OVER",300,220);ctx.font="22px system-ui";ctx.fillText("KILL:"+kills+" / SCORE:"+score,380,270);ctx.fillText("Rでタイトルに戻る",390,315)}
+function loop(){update();draw();requestAnimationFrame(loop)}
+resetGame(true);loop();
+</script>
+</body>
+</html>
